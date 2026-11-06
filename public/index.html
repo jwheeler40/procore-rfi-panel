@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDF to RFI</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#f6f7f8;--surface:#fff;--ink:#1d2329;--mute:#5d6873;--line:#d3d9de;--accent:#235a8c;--accent-ink:#fff;--ok:#1f7a4d;--err:#b3261e}
+@media (prefers-color-scheme:dark){:root{--bg:#161a1e;--surface:#1e242a;--ink:#e6eaee;--mute:#9aa6b1;--line:#334049;--accent:#6ba6dc;--accent-ink:#0e1a26;--ok:#59c48b;--err:#f08a82}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 "IBM Plex Sans",system-ui,sans-serif}
+main{padding:14px;display:grid;gap:14px}
+h1{font-size:15px;margin:0;font-weight:600}
+.row{display:flex;gap:8px;align-items:center}
+.row>*{flex:1;min-width:0}
+.grid{display:grid;gap:14px}
+label{display:grid;gap:3px;color:var(--mute);font-size:12px}
+input,textarea,select{width:100%;font:inherit;color:var(--ink);background:var(--surface);border:1px solid var(--line);border-radius:4px;padding:7px 8px}
+textarea{min-height:110px;resize:vertical}
+:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+button{font:inherit;font-weight:500;border-radius:4px;border:1px solid var(--accent);background:var(--accent);color:var(--accent-ink);padding:8px 12px;cursor:pointer}
+button.ghost{background:none;color:var(--accent)}
+button:disabled{opacity:.5;cursor:default}
+.drop{border:2px dashed var(--line);border-radius:4px;padding:26px 14px;text-align:center;color:var(--mute);cursor:pointer;
+ background:repeating-linear-gradient(0deg,transparent 0 23px,color-mix(in srgb,var(--line) 45%,transparent) 23px 24px)}
+.drop.over{border-color:var(--accent);color:var(--ink)}
+.seg{display:flex;border:1px solid var(--line);border-radius:4px;overflow:hidden}
+.seg button{border:0;border-radius:0;background:var(--surface);color:var(--mute);flex:1}
+.seg button[aria-pressed=true]{background:var(--accent);color:var(--accent-ink)}
+.msg{padding:8px 10px;border-radius:4px;border:1px solid var(--line);background:var(--surface)}
+.msg.ok{border-color:var(--ok);color:var(--ok)} .msg.err{border-color:var(--err);color:var(--err)}
+.hint{font-size:12px;color:var(--mute)}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<main>
+  <div class="row"><h1>PDF to RFI</h1><span id="ctxline" class="hint" style="text-align:right"></span></div>
+
+  <section id="auth" hidden>
+    <p class="hint">Sign in so the panel can read and write RFIs on your behalf.</p>
+    <button id="signin">Sign in to Procore</button>
+  </section>
+
+  <section id="work" hidden class="grid">
+    <div id="ctxform" class="row">
+      <label>Company ID<input id="company"></label>
+      <label>Project ID<input id="project"></label>
+    </div>
+
+    <div id="drop" class="drop" tabindex="0" role="button" aria-label="Upload a PDF">
+      <b>Drop a PDF here</b><br><span class="hint">or click to choose a file (max 30 MB)</span>
+      <input id="file" type="file" accept="application/pdf" hidden>
+    </div>
+
+    <div id="review" hidden class="grid" style="gap:12px">
+      <div class="seg" role="group" aria-label="Destination">
+        <button id="m-new" aria-pressed="true">New RFI</button>
+        <button id="m-add" aria-pressed="false">Add to existing</button>
+      </div>
+      <label id="pick" hidden>Existing RFI<select id="existing"></select><span id="matchnote" class="hint"></span></label>
+      <div id="fields" class="grid" style="gap:10px"></div>
+      <div class="row"><button id="submit">Create RFI</button><button id="reset" class="ghost">Start over</button></div>
+    </div>
+  </section>
+
+  <div id="status" class="msg" hidden role="status"></div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const qs = new URLSearchParams(location.search);
+let sid = sessionStorage.getItem('sid'), target, mode = 'new', items = [];
+const TARGET_ID = qs.get('target') || 'rfi'; // future: switch targets from a dropdown
+
+const say = (t, kind = '') => { const s = $('status'); s.hidden = !t; s.textContent = t || ''; s.className = 'msg ' + kind; };
+const ctx = () => `company_id=${$('company').value}&project_id=${$('project').value}`;
+async function api(path, opts = {}) {
+  const r = await fetch(path, { ...opts, headers: { ...(opts.headers || {}), Authorization: 'Bearer ' + sid } });
+  const j = await r.json().catch(() => ({}));
+  if (r.status === 401) { showAuth(); throw new Error(j.error || 'Signed out'); }
+  if (!r.ok) throw new Error(j.error || 'Request failed');
+  return j;
+}
+
+function showAuth() { $('auth').hidden = false; $('work').hidden = true; }
+function showWork() { $('auth').hidden = true; $('work').hidden = false; $('ctxform').hidden = !!(qs.get('company_id') && qs.get('project_id')); }
+
+$('signin').onclick = async () => {
+  const s = await fetch('/auth/start', { method: 'POST' }).then(r => r.json());
+  sid = s.sid; sessionStorage.setItem('sid', sid);
+  window.open(s.url, 'procore-auth', 'width=520,height=680');
+};
+addEventListener('message', (e) => { if (e.data === 'procore-auth-ok') { say('Signed in.', 'ok'); showWork(); } });
+
+// ---- Upload
+const drop = $('drop');
+drop.onclick = () => $('file').click();
+drop.onkeydown = (e) => (e.key === 'Enter' || e.key === ' ') && $('file').click();
+['dragover', 'dragenter'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave', 'drop'].forEach(ev => drop.addEventListener(ev, e => { e.preventDefault(); drop.classList.remove('over'); }));
+drop.addEventListener('drop', e => handle(e.dataTransfer.files[0]));
+$('file').onchange = e => handle(e.target.files[0]);
+
+async function handle(file) {
+  if (!file) return;
+  if (file.type !== 'application/pdf') return say('That file is not a PDF. Choose a .pdf file.', 'err');
+  if (!$('company').value || !$('project').value) return say('Enter the company and project IDs first.', 'err');
+  say('Reading ' + file.name + '…');
+  try {
+    const fd = new FormData(); fd.append('file', file); fd.append('target', TARGET_ID);
+    const { fields } = await api('/api/extract', { method: 'POST', body: fd });
+    renderFields(fields);
+    items = await api(`/api/${TARGET_ID}/items?${ctx()}`);
+    $('existing').innerHTML = items.map(i => `<option value="${i.id}">${i.label.replace(/</g, '&lt;')}</option>`).join('');
+    suggestMatch(fields);
+    $('drop').hidden = true; $('review').hidden = false;
+    say('Review the extracted details, then choose where to put them.', 'ok');
+  } catch (e) { say(e.message, 'err'); }
+}
+
+function renderFields(values) {
+  $('fields').innerHTML = '';
+  target.fields.forEach(f => {
+    const l = document.createElement('label'); l.textContent = f.label;
+    const el = document.createElement(f.type === 'textarea' ? 'textarea' : 'input');
+    if (el.tagName === 'INPUT') el.type = f.type || 'text';
+    el.dataset.key = f.key; el.value = values[f.key] || '';
+    l.append(el); $('fields').append(l);
+  });
+}
+const collect = () => Object.fromEntries([...$('fields').querySelectorAll('[data-key]')].map(e => [e.dataset.key, e.value]));
+
+// Simple word-overlap match so the likely RFI is preselected.
+function suggestMatch(f) {
+  const words = s => new Set((s || '').toLowerCase().match(/[a-z0-9]{4,}/g) || []);
+  const a = words(f.subject + ' ' + f.question + ' ' + f.spec_section);
+  let best = null, score = 0;
+  items.forEach(i => { const b = words(i.subject); const n = [...b].filter(w => a.has(w)).length / (b.size || 1); if (n > score) { score = n; best = i; } });
+  if (best && score >= .4) { $('existing').value = best.id; $('matchnote').textContent = 'Possible match: ' + best.label; }
+  else $('matchnote').textContent = '';
+}
+
+function setMode(m) {
+  mode = m;
+  $('m-new').setAttribute('aria-pressed', m === 'new'); $('m-add').setAttribute('aria-pressed', m === 'add');
+  $('pick').hidden = m === 'new';
+  $('submit').textContent = m === 'new' ? 'Create ' + target.label : 'Add to ' + target.label;
+}
+$('m-new').onclick = () => setMode('new'); $('m-add').onclick = () => setMode('add');
+
+$('submit').onclick = async () => {
+  $('submit').disabled = true; say('Saving to Procore…');
+  try {
+    const body = JSON.stringify({ fields: collect(), company_id: $('company').value, project_id: $('project').value });
+    const h = { 'content-type': 'application/json' };
+    const url = mode === 'new' ? `/api/${TARGET_ID}/create` : `/api/${TARGET_ID}/append/${$('existing').value}`;
+    await api(url, { method: 'POST', headers: h, body });
+    say(mode === 'new' ? 'RFI created.' : 'Added to the RFI.', 'ok');
+    reset(false);
+  } catch (e) { say(e.message, 'err'); }
+  $('submit').disabled = false;
+};
+function reset(clear = true) { $('review').hidden = true; $('drop').hidden = false; $('file').value = ''; if (clear) say(''); }
+$('reset').onclick = () => reset();
+
+// ---- Boot. Procore passes context via the embedded-app URL; swap in @procore/procore-iframe-helpers here if preferred.
+(async function () {
+  $('company').value = qs.get('company_id') || ''; $('project').value = qs.get('project_id') || '';
+  if (qs.get('project_id')) $('ctxline').textContent = `Project ${qs.get('project_id')}`;
+  target = (await fetch('/api/targets').then(r => r.json())).find(t => t.id === TARGET_ID);
+  setMode('new');
+  if (!target.supportsAppend) $('m-add').hidden = true;
+  sid ? showWork() : showAuth();
+})();
+</script>
+</body>
+</html>

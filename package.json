@@ -1,0 +1,8 @@
+{
+  "name": "procore-rfi-panel",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": { "start": "node server/index.js", "dev": "node --watch server/index.js" },
+  "dependencies": { "dotenv": "^16.4.5", "express": "^4.19.2", "multer": "^1.4.5-lts.1" },
+  "engines": { "node": ">=18" }
+}
